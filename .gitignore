@@ -1,0 +1,8 @@
+# Local dev / upstream pipeline artifacts — not needed for the public demo
+media/
+transcripts/
+transcripts-to-sentences.py
+sermon_search_project_brief.md
+Claude.md
+.claude/
+.DS_Store

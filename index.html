@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Athey Creek Sermon Search</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1e222b;
+    --text: #e8eaed;
+    --muted: #9aa3b2;
+    --accent: #5b9bff;
+    --hit: #ffd24a;
+    --hit-bg: #4a3c00;
+    --border: #2a2f3a;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 820px; margin: 0 auto; padding: 16px 16px 140px; }
+  header h1 { font-size: 1.35rem; margin: 8px 0 2px; }
+  header p { color: var(--muted); margin: 0 0 16px; font-size: .9rem; }
+
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  select, input[type="search"] {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    font-size: 1rem;
+    outline: none;
+  }
+  select { flex: 0 0 auto; max-width: 100%; }
+  input[type="search"] { flex: 1 1 220px; min-width: 0; }
+  input[type="search"]:focus, select:focus { border-color: var(--accent); }
+
+  .meta { color: var(--muted); font-size: .85rem; margin: 4px 2px 12px; min-height: 1.2em; }
+
+  ul.results { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  li.result {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    cursor: pointer;
+    transition: border-color .12s, background .12s;
+  }
+  li.result:hover, li.result:focus-visible { border-color: var(--accent); background: var(--panel-2); outline: none; }
+  .ts {
+    display: inline-block;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent);
+    font-weight: 600;
+    font-size: .85rem;
+    margin-bottom: 4px;
+  }
+  .ctx { color: var(--muted); }
+  .main { color: var(--text); }
+  mark { background: var(--hit-bg); color: var(--hit); border-radius: 3px; padding: 0 2px; }
+
+  .player {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    background: var(--panel); border-top: 1px solid var(--border);
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  }
+  .player .inner { max-width: 820px; margin: 0 auto; }
+  .now { font-size: .8rem; color: var(--muted); margin-bottom: 6px; }
+  audio { width: 100%; }
+
+  @media (max-width: 480px) {
+    .wrap { padding-top: 8px; }
+    header h1 { font-size: 1.15rem; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Athey Creek Sermon Search</h1>
+      <p>Search the sermon, click a line to jump there in the audio.</p>
+    </header>
+
+    <div class="controls">
+      <select id="sermon" aria-label="Choose sermon"></select>
+      <input id="q" type="search" placeholder="Search a word or phrase…" autocomplete="off" aria-label="Search transcript" />
+    </div>
+    <div class="meta" id="meta"></div>
+
+    <ul class="results" id="results"></ul>
+  </div>
+
+  <div class="player">
+    <div class="inner">
+      <div class="now" id="now">No sermon loaded</div>
+      <audio id="audio" controls preload="none"></audio>
+    </div>
+  </div>
+
+<script>
+/* ----------------------------------------------------------------------------
+ * Config — single source of truth
+ * -------------------------------------------------------------------------- */
+
+// Sermon registry. Adding a sermon = drop its JSON in final_output/ and add a row.
+const SERMONS = [
+  { id: "s2-574", title: "Marriage 101" },
+  { id: "s2-575", title: "Sermon s2-575" },
+];
+
+// Where transcript JSON lives, relative to this page.
+const TRANSCRIPT_PATH = (id) => `final_output/${id}.json`;
+
+// Audio source — swap AUDIO_MODE to toggle between CloudFront (prod) and local media/ (dev).
+const AUDIO_MODE = "cloudfront"; // "cloudfront" | "local"
+const AUDIO_BASE = {
+  cloudfront: (id) => `https://d2ecbaqsz6tho7.cloudfront.net/audio/teachings/${id}.mp3`,
+  local:      (id) => `media/${id}.mp3`,
+};
+const audioUrl = (id) => AUDIO_BASE[AUDIO_MODE](id);
+
+/* ----------------------------------------------------------------------------
+ * State + elements
+ * -------------------------------------------------------------------------- */
+let sentences = [];      // [{start,end,text}]
+let currentId = null;
+
+const els = {
+  sermon: document.getElementById("sermon"),
+  q: document.getElementById("q"),
+  meta: document.getElementById("meta"),
+  results: document.getElementById("results"),
+  audio: document.getElementById("audio"),
+  now: document.getElementById("now"),
+};
+
+/* ----------------------------------------------------------------------------
+ * Helpers
+ * -------------------------------------------------------------------------- */
+const titleFor = (id) => (SERMONS.find((s) => s.id === id) || {}).title || id;
+
+function mmss(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function escapeHtml(str) {
+  return str.replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+function escapeRegExp(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Escape text, then wrap matches of `query` in <mark>. Query is treated as a literal phrase.
+function highlight(text, query) {
+  const safe = escapeHtml(text);
+  if (!query) return safe;
+  const re = new RegExp(escapeRegExp(escapeHtml(query)), "gi");
+  return safe.replace(re, (m) => `<mark>${m}</mark>`);
+}
+
+/* ----------------------------------------------------------------------------
+ * Data loading
+ * -------------------------------------------------------------------------- */
+async function loadSermon(id) {
+  currentId = id;
+  sentences = [];
+  els.results.innerHTML = "";
+  els.meta.textContent = "Loading…";
+  els.now.textContent = `${titleFor(id)} (${id})`;
+
+  els.audio.src = audioUrl(id);
+  els.audio.load();
+
+  try {
+    const res = await fetch(TRANSCRIPT_PATH(id), { cache: "no-cache" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    sentences = await res.json();
+    els.meta.textContent = `${sentences.length} sentences loaded.`;
+    runSearch();
+  } catch (err) {
+    els.meta.textContent = `Failed to load transcript (${err.message}). Serve over http (see README), not file://.`;
+  }
+}
+
+/* ----------------------------------------------------------------------------
+ * Search
+ * -------------------------------------------------------------------------- */
+function runSearch() {
+  const query = els.q.value.trim();
+  els.results.innerHTML = "";
+
+  if (!query) {
+    els.meta.textContent = sentences.length
+      ? `${sentences.length} sentences loaded. Type to search.`
+      : els.meta.textContent;
+    return;
+  }
+
+  const needle = query.toLowerCase();
+  const hits = [];
+  for (let i = 0; i < sentences.length; i++) {
+    if (sentences[i].text.toLowerCase().includes(needle)) hits.push(i);
+  }
+
+  els.meta.textContent = hits.length
+    ? `${hits.length} result${hits.length === 1 ? "" : "s"} for “${query}”.`
+    : `No results for “${query}”.`;
+
+  const frag = document.createDocumentFragment();
+  for (const i of hits) {
+    frag.appendChild(renderHit(i, query));
+  }
+  els.results.appendChild(frag);
+}
+
+// Escaped text of a neighbor sentence (offset -1 = before, +1 = after), with a
+// joining space on the correct side. Empty string when there is no such neighbor.
+function neighborHtml(i, offset) {
+  const s = sentences[i + offset];
+  if (!s) return "";
+  const text = escapeHtml(s.text);
+  return offset < 0 ? text + " " : " " + text;
+}
+
+function renderHit(i, query) {
+  const s = sentences[i];
+  const before = neighborHtml(i, -1);
+  const after = neighborHtml(i, +1);
+
+  const li = document.createElement("li");
+  li.className = "result";
+  li.tabIndex = 0;
+  li.innerHTML =
+    `<span class="ts">${mmss(s.start)}</span><br>` +
+    `<span class="ctx">${before}</span>` +
+    `<span class="main">${highlight(s.text, query)}</span>` +
+    `<span class="ctx">${after}</span>`;
+
+  const seek = () => jumpTo(s.start);
+  li.addEventListener("click", seek);
+  li.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); seek(); }
+  });
+  return li;
+}
+
+function jumpTo(start) {
+  els.audio.currentTime = start;
+  els.audio.play().catch(() => { /* autoplay may require a gesture; click counts */ });
+}
+
+/* ----------------------------------------------------------------------------
+ * Wiring
+ * -------------------------------------------------------------------------- */
+function init() {
+  for (const s of SERMONS) {
+    const opt = document.createElement("option");
+    opt.value = s.id;
+    opt.textContent = `${s.title} (${s.id})`;
+    els.sermon.appendChild(opt);
+  }
+  els.sermon.addEventListener("change", () => loadSermon(els.sermon.value));
+
+  let t;
+  els.q.addEventListener("input", () => {
+    clearTimeout(t);
+    t = setTimeout(runSearch, 80);
+  });
+
+  loadSermon(SERMONS[0].id);
+}
+
+init();
+</script>
+</body>
+</html>
