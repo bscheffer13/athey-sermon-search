@@ -65,6 +65,8 @@
   }
   .ctx { color: var(--muted); }
   .main { color: var(--text); }
+  .src { color: var(--text); font-weight: 600; font-size: .8rem; }
+  .dot { color: var(--muted); margin: 0 6px; }
   mark { background: var(--hit-bg); color: var(--hit); border-radius: 3px; padding: 0 2px; }
 
   .player {
@@ -86,11 +88,11 @@
   <div class="wrap">
     <header>
       <h1>Athey Creek Sermon Search</h1>
-      <p>Search the sermon, click a line to jump there in the audio.</p>
+      <p>Search across all sermons (or filter to one), then click a line to jump to that moment.</p>
     </header>
 
     <div class="controls">
-      <select id="sermon" aria-label="Choose sermon"></select>
+      <select id="sermon" aria-label="Filter by sermon"></select>
       <input id="q" type="search" placeholder="Search a word or phrase…" autocomplete="off" aria-label="Search transcript" />
     </div>
     <div class="meta" id="meta"></div>
@@ -100,7 +102,7 @@
 
   <div class="player">
     <div class="inner">
-      <div class="now" id="now">No sermon loaded</div>
+      <div class="now" id="now">Click a result to play</div>
       <audio id="audio" controls preload="none"></audio>
     </div>
   </div>
@@ -130,8 +132,12 @@ const audioUrl = (id) => AUDIO_BASE[AUDIO_MODE](id);
 /* ----------------------------------------------------------------------------
  * State + elements
  * -------------------------------------------------------------------------- */
-let sentences = [];      // [{start,end,text}]
-let currentId = null;
+let library = [];     // [{ id, title, sentences: [{start,end,text}] }]
+let playingId = null; // id of the sermon currently loaded in the audio element
+
+// Safety cap on rendered results — cross-sermon searches can be large.
+// This is the boundary that moves to SQLite/Postgres FTS5 when scaling to thousands.
+const MAX_RESULTS = 500;
 
 const els = {
   sermon: document.getElementById("sermon"),
@@ -175,25 +181,46 @@ function highlight(text, query) {
 /* ----------------------------------------------------------------------------
  * Data loading
  * -------------------------------------------------------------------------- */
-async function loadSermon(id) {
-  currentId = id;
-  sentences = [];
-  els.results.innerHTML = "";
-  els.meta.textContent = "Loading…";
-  els.now.textContent = `${titleFor(id)} (${id})`;
+// Fetch every sermon in the registry concurrently into `library`.
+// One failing transcript doesn't sink the rest (Promise.allSettled).
+async function loadLibrary() {
+  els.meta.textContent = "Loading library…";
+  const settled = await Promise.allSettled(
+    SERMONS.map(async (s) => {
+      const res = await fetch(TRANSCRIPT_PATH(s.id), { cache: "no-cache" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { id: s.id, title: s.title, sentences: await res.json() };
+    })
+  );
 
+  library = settled.filter((r) => r.status === "fulfilled").map((r) => r.value);
+  const failed = SERMONS.length - library.length;
+
+  if (!library.length) {
+    els.meta.textContent =
+      "Failed to load transcripts. Serve over http (see README), not file://.";
+    return;
+  }
+  els.meta.textContent = failed
+    ? `Loaded ${library.length} of ${SERMONS.length} sermons (${failed} failed). Type to search.`
+    : libraryStatus();
+  runSearch();
+}
+
+// Point the audio element at a sermon (without seeking). Used when the active
+// result or filter belongs to a sermon other than the one currently loaded.
+function loadAudio(id) {
+  playingId = id;
   els.audio.src = audioUrl(id);
   els.audio.load();
+  els.now.textContent = `${titleFor(id)} (${id})`;
+}
 
-  try {
-    const res = await fetch(TRANSCRIPT_PATH(id), { cache: "no-cache" });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    sentences = await res.json();
-    els.meta.textContent = `${sentences.length} sentences loaded.`;
-    runSearch();
-  } catch (err) {
-    els.meta.textContent = `Failed to load transcript (${err.message}). Serve over http (see README), not file://.`;
-  }
+// Idle status line: how much of the library is loaded.
+function libraryStatus() {
+  if (!library.length) return els.meta.textContent;
+  const total = library.reduce((n, s) => n + s.sentences.length, 0);
+  return `${library.length} sermon${library.length === 1 ? "" : "s"}, ${total.toLocaleString()} sentences loaded. Type to search.`;
 }
 
 /* ----------------------------------------------------------------------------
@@ -204,53 +231,65 @@ function runSearch() {
   els.results.innerHTML = "";
 
   if (!query) {
-    els.meta.textContent = sentences.length
-      ? `${sentences.length} sentences loaded. Type to search.`
-      : els.meta.textContent;
+    els.meta.textContent = libraryStatus();
     return;
   }
 
   const needle = query.toLowerCase();
+  const scope = els.sermon.value; // "all" or a sermon id
+  const pool = scope === "all" ? library : library.filter((s) => s.id === scope);
+
   const hits = [];
-  for (let i = 0; i < sentences.length; i++) {
-    if (sentences[i].text.toLowerCase().includes(needle)) hits.push(i);
+  let capped = false;
+  outer:
+  for (const sermon of pool) {
+    const arr = sermon.sentences;
+    for (let i = 0; i < arr.length; i++) {
+      if (arr[i].text.toLowerCase().includes(needle)) {
+        hits.push({ sermon, i });
+        if (hits.length >= MAX_RESULTS) { capped = true; break outer; }
+      }
+    }
   }
 
-  els.meta.textContent = hits.length
-    ? `${hits.length} result${hits.length === 1 ? "" : "s"} for “${query}”.`
-    : `No results for “${query}”.`;
+  if (!hits.length) {
+    els.meta.textContent = `No results for “${query}”.`;
+    return;
+  }
+  els.meta.textContent =
+    `${hits.length}${capped ? "+" : ""} result${hits.length === 1 ? "" : "s"} for “${query}”` +
+    (scope === "all" ? ` across ${pool.length} sermon${pool.length === 1 ? "" : "s"}.` : ".");
 
   const frag = document.createDocumentFragment();
-  for (const i of hits) {
-    frag.appendChild(renderHit(i, query));
-  }
+  for (const hit of hits) frag.appendChild(renderHit(hit, query));
   els.results.appendChild(frag);
 }
 
 // Escaped text of a neighbor sentence (offset -1 = before, +1 = after), with a
 // joining space on the correct side. Empty string when there is no such neighbor.
-function neighborHtml(i, offset) {
-  const s = sentences[i + offset];
+function neighborHtml(arr, i, offset) {
+  const s = arr[i + offset];
   if (!s) return "";
   const text = escapeHtml(s.text);
   return offset < 0 ? text + " " : " " + text;
 }
 
-function renderHit(i, query) {
-  const s = sentences[i];
-  const before = neighborHtml(i, -1);
-  const after = neighborHtml(i, +1);
+function renderHit(hit, query) {
+  const { sermon, i } = hit;
+  const arr = sermon.sentences;
+  const s = arr[i];
 
   const li = document.createElement("li");
   li.className = "result";
   li.tabIndex = 0;
   li.innerHTML =
-    `<span class="ts">${mmss(s.start)}</span><br>` +
-    `<span class="ctx">${before}</span>` +
+    `<span class="src">${escapeHtml(sermon.title)}</span>` +
+    `<span class="dot">·</span><span class="ts">${mmss(s.start)}</span><br>` +
+    `<span class="ctx">${neighborHtml(arr, i, -1)}</span>` +
     `<span class="main">${highlight(s.text, query)}</span>` +
-    `<span class="ctx">${after}</span>`;
+    `<span class="ctx">${neighborHtml(arr, i, +1)}</span>`;
 
-  const seek = () => jumpTo(s.start);
+  const seek = () => playAt(sermon.id, s.start);
   li.addEventListener("click", seek);
   li.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); seek(); }
@@ -258,22 +297,44 @@ function renderHit(i, query) {
   return li;
 }
 
-function jumpTo(start) {
+function seekAndPlay(start) {
   els.audio.currentTime = start;
-  els.audio.play().catch(() => { /* autoplay may require a gesture; click counts */ });
+  els.audio.play().catch(() => { /* autoplay may require a gesture; the click counts */ });
+}
+
+// Seek the player to `start` in sermon `id`, loading that sermon's audio first
+// if it isn't the one currently in the player (then seeking once metadata is ready).
+function playAt(id, start) {
+  if (id === playingId) { seekAndPlay(start); return; }
+  loadAudio(id);
+  const onReady = () => {
+    els.audio.removeEventListener("loadedmetadata", onReady);
+    seekAndPlay(start);
+  };
+  els.audio.addEventListener("loadedmetadata", onReady);
 }
 
 /* ----------------------------------------------------------------------------
  * Wiring
  * -------------------------------------------------------------------------- */
 function init() {
+  const all = document.createElement("option");
+  all.value = "all";
+  all.textContent = "All sermons";
+  els.sermon.appendChild(all);
+
   for (const s of SERMONS) {
     const opt = document.createElement("option");
     opt.value = s.id;
     opt.textContent = `${s.title} (${s.id})`;
     els.sermon.appendChild(opt);
   }
-  els.sermon.addEventListener("change", () => loadSermon(els.sermon.value));
+
+  els.sermon.addEventListener("change", () => {
+    const v = els.sermon.value;
+    if (v !== "all" && v !== playingId) loadAudio(v); // preload so it's directly playable
+    runSearch();
+  });
 
   let t;
   els.q.addEventListener("input", () => {
@@ -281,7 +342,7 @@ function init() {
     t = setTimeout(runSearch, 80);
   });
 
-  loadSermon(SERMONS[0].id);
+  loadLibrary();
 }
 
 init();
