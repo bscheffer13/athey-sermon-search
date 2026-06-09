@@ -1,6 +1,6 @@
-# Athey Creek Sermon Search (Demo / MVP)
+# Athey Creek Teaching Library (Demo / MVP)
 
-Search a sermon transcript and click any line to jump to that exact moment in the audio.
+**Search every word — find the moment.** Search the teaching transcripts and click any line to jump to that exact moment in the audio.
 
 ## Run it
 
@@ -24,14 +24,14 @@ Then open <http://localhost:8000/>.
 
 ## Configuration (top of the `<script>` in `index.html`)
 
-- **`SERMONS`** — registry. Add a sermon: drop `final_output/{ID}.json` and add `{ id, title }`.
+- **`SERMONS`** — registry. Add a teaching: drop `final_output/{ID}.json` and add `{ id, title }`.
 - **`AUDIO_MODE`** — `"cloudfront"` (prod) streams from
   `https://d2ecbaqsz6tho7.cloudfront.net/audio/teachings/{ID}.mp3`;
   `"local"` plays from `media/{ID}.mp3` (offline dev).
 
 ## Scope
 
-MVP only: client-side search + click-to-jump on the sermons in `final_output/`.
+MVP only: client-side search + click-to-jump on the teachings in `final_output/`.
 Out of scope for now: accounts, favorites, sharing, Vimeo embed, the transcription
-pipeline, and the full multi-sermon catalog + metadata scraping. Move to SQLite FTS5
-or Postgres when scaling to thousands of sermons.
+pipeline, and the full multi-teaching catalog + metadata scraping. Move to SQLite FTS5
+or Postgres when scaling to thousands of teachings.

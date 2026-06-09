@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Athey Creek Sermon Search</title>
+<meta name="description" content="Search every word — find the moment. The Athey Creek Teaching Library lets you search every teaching transcript and jump to the exact moment in the audio." />
+<title>Athey Creek Teaching Library</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,500;0,600;1,400;1,500&family=Source+Sans+3:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
@@ -114,13 +115,13 @@
     <header>
       <div class="brand">
         <span class="badge">ac</span>
-        <h1>Sermon Search</h1>
+        <h1>Teaching Library</h1>
       </div>
-      <p>Search across all sermons (or filter to one), then click a line to jump to that moment.</p>
+      <p>Search every word — find the moment.</p>
     </header>
 
     <div class="controls">
-      <select id="sermon" aria-label="Filter by sermon"></select>
+      <select id="sermon" aria-label="Filter by teaching"></select>
       <input id="q" type="search" placeholder="Search a word or phrase…" autocomplete="off" aria-label="Search transcript" />
     </div>
     <div class="meta" id="meta"></div>
@@ -143,7 +144,7 @@
 // Sermon registry. Adding a sermon = drop its JSON in final_output/ and add a row.
 const SERMONS = [
   { id: "s2-574", title: "Marriage 101" },
-  { id: "s2-575", title: "Sermon s2-575" },
+  { id: "s2-575", title: "Teaching s2-575" },
 ];
 
 // Where transcript JSON lives, relative to this page.
@@ -230,7 +231,7 @@ async function loadLibrary() {
     return;
   }
   els.meta.textContent = failed
-    ? `Loaded ${library.length} of ${SERMONS.length} sermons (${failed} failed). Type to search.`
+    ? `Loaded ${library.length} of ${SERMONS.length} teachings (${failed} failed). Type to search.`
     : libraryStatus();
   runSearch();
 }
@@ -248,7 +249,7 @@ function loadAudio(id) {
 function libraryStatus() {
   if (!library.length) return els.meta.textContent;
   const total = library.reduce((n, s) => n + s.sentences.length, 0);
-  return `${library.length} sermon${library.length === 1 ? "" : "s"}, ${total.toLocaleString()} sentences loaded. Type to search.`;
+  return `${library.length} teaching${library.length === 1 ? "" : "s"}, ${total.toLocaleString()} sentences loaded. Type to search.`;
 }
 
 /* ----------------------------------------------------------------------------
@@ -286,7 +287,7 @@ function runSearch() {
   }
   els.meta.textContent =
     `${hits.length}${capped ? "+" : ""} result${hits.length === 1 ? "" : "s"} for “${query}”` +
-    (scope === "all" ? ` across ${pool.length} sermon${pool.length === 1 ? "" : "s"}.` : ".");
+    (scope === "all" ? ` across ${pool.length} teaching${pool.length === 1 ? "" : "s"}.` : ".");
 
   const frag = document.createDocumentFragment();
   for (const hit of hits) frag.appendChild(renderHit(hit, query));
@@ -348,7 +349,7 @@ function playAt(id, start) {
 function init() {
   const all = document.createElement("option");
   all.value = "all";
-  all.textContent = "All sermons";
+  all.textContent = "All teachings";
   els.sermon.appendChild(all);
 
   for (const s of SERMONS) {
